@@ -1,0 +1,50 @@
+name: inference-studio
+
+services:
+  api:
+    build: ./api
+    container_name: inference-studio-api
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=3001
+      - DATA_DIR=/app/data
+      # GPU_TYPE is set by deploy-locally.sh: nvidia | metal | cpu
+      - GPU_TYPE=${GPU_TYPE:-cpu}
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-password}
+      - JWT_SECRET=${JWT_SECRET:-inference-studio-change-me-in-production}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  web:
+    build:
+      context: ./web
+      args:
+        - API_URL=http://api:3001
+    container_name: inference-studio-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - API_URL=http://api:3001
+      - NEXT_TELEMETRY_DISABLED=1
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 45s
