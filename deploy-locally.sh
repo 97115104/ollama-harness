@@ -33,6 +33,156 @@ spin() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Service startup progress (per-service + overall bar)
+# ─────────────────────────────────────────────────────────────────────────────
+PROGRESS_TOTAL=6
+PROGRESS_STEP=0
+PROGRESS_PANEL_LINES=0
+PROGRESS_SPIN_FRAME=0
+
+declare -a SVC_LABELS=("Ollama" "API" "Web UI")
+declare -a SVC_LOG_NAMES=("ollama" "api" "web")
+declare -a SVC_STATES=("pending" "pending" "pending")
+declare -a SVC_DETAILS=("waiting" "waiting" "waiting")
+
+progress_erase_panel() {
+  [[ "$PROGRESS_PANEL_LINES" -eq 0 ]] && return 0
+  local i
+  for ((i = 0; i < PROGRESS_PANEL_LINES; i++)); do
+    printf '\033[1A\033[2K'
+  done
+}
+
+progress_icon() {
+  local -a frames=("⣾" "⣽" "⣻" "⢿" "⡿" "⣟" "⣯" "⣷")
+  case "$1" in
+    done)    printf '%s' "${GRN}✓${R}" ;;
+    loading) printf '%s' "${CYN}${frames[$((PROGRESS_SPIN_FRAME % 8))]}${R}" ;;
+    error)   printf '%s' "${RED}✗${R}" ;;
+    *)       printf '%s' "${GRY}○${R}" ;;
+  esac
+}
+
+progress_render_panel() {
+  progress_erase_panel
+
+  local -a lines=()
+  local pct=$(( PROGRESS_STEP * 100 / PROGRESS_TOTAL ))
+  local filled=$(( pct * 28 / 100 ))
+  local bar=""
+  local i
+  for ((i = 0; i < 28; i++)); do
+    [[ $i -lt $filled ]] && bar+="█" || bar+="░"
+  done
+  lines+=("  ${B}Overall${R}  [${LIME}${bar}${R}]  ${pct}%  · step ${PROGRESS_STEP}/${PROGRESS_TOTAL}")
+  lines+=("  ${GRY}First run can take 5–10 minutes — each service updates below.${R}")
+  lines+=("")
+
+  local idx label state detail
+  for idx in "${!SVC_LABELS[@]}"; do
+    label="${SVC_LABELS[$idx]}"
+    state="${SVC_STATES[$idx]}"
+    detail="${SVC_DETAILS[$idx]}"
+    lines+=("  $(progress_icon "$state")  ${B}${label}${R}  ${GRY}${detail}${R}")
+  done
+
+  for line in "${lines[@]}"; do
+    printf '%s\n' "$line"
+  done
+  PROGRESS_PANEL_LINES=${#lines[@]}
+}
+
+progress_init_panel() {
+  PROGRESS_STEP=0
+  PROGRESS_PANEL_LINES=0
+  PROGRESS_SPIN_FRAME=0
+  SVC_STATES=("pending" "pending" "pending")
+  SVC_DETAILS=("waiting" "waiting" "waiting")
+  progress_render_panel
+}
+
+progress_advance() {
+  [[ $PROGRESS_STEP -lt $PROGRESS_TOTAL ]] && ((PROGRESS_STEP++)) || true
+  progress_render_panel
+}
+
+progress_set_service() {
+  local idx=$1 state=$2 detail=$3
+  SVC_STATES[$idx]="$state"
+  SVC_DETAILS[$idx]="$detail"
+  progress_render_panel
+}
+
+progress_run() {
+  local idx=$1 detail=$2
+  shift 2
+  local logfile start elapsed
+  logfile=$(mktemp)
+  start=$(date +%s)
+
+  progress_set_service "$idx" loading "$detail"
+  "$@" >"$logfile" 2>&1 &
+  local pid=$!
+
+  while kill -0 "$pid" 2>/dev/null; do
+    elapsed=$(( $(date +%s) - start ))
+    ((PROGRESS_SPIN_FRAME++)) || true
+    progress_set_service "$idx" loading "${detail} (${elapsed}s)"
+    sleep 1
+  done
+
+  if wait "$pid"; then
+    rm -f "$logfile"
+    return 0
+  fi
+
+  progress_set_service "$idx" error "failed — see log below"
+  printf '\n'
+  cat "$logfile"
+  rm -f "$logfile"
+  return 1
+}
+
+progress_wait_healthy() {
+  local idx=$1 container=$2 url=$3 label=$4
+  local deadline=$(( $(date +%s) + 180 ))
+  local start=$(date +%s)
+
+  while [[ $(date +%s) -lt $deadline ]]; do
+    local elapsed=$(( $(date +%s) - start ))
+    ((PROGRESS_SPIN_FRAME++)) || true
+
+    if [[ -n "$container" ]]; then
+      local health
+      health=$(docker inspect "$container" --format='{{.State.Health.Status}}' 2>/dev/null || echo "")
+      case "$health" in
+        healthy)
+          progress_set_service "$idx" done "$label"
+          progress_advance
+          return 0
+          ;;
+        starting|unhealthy)
+          progress_set_service "$idx" loading "health check… (${elapsed}s)"
+          ;;
+        *)
+          progress_set_service "$idx" loading "starting container… (${elapsed}s)"
+          ;;
+      esac
+    elif curl -sf "$url" >/dev/null 2>&1; then
+      progress_set_service "$idx" done "$label"
+      progress_advance
+      return 0
+    else
+      progress_set_service "$idx" loading "health check… (${elapsed}s)"
+    fi
+    sleep 2
+  done
+
+  progress_set_service "$idx" error "timed out — run: compose logs ${SVC_LOG_NAMES[$idx]}"
+  return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Sudo management — prompt once, keep alive
 # ─────────────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -436,69 +586,47 @@ start_studio() {
 
   export GPU_TYPE
 
-  # Free up ports if other containers are using them
   for port in $WEB_PORT $API_PORT; do
     local cid
     cid=$(docker ps -q --filter "publish=$port" 2>/dev/null || true)
     [[ -n "$cid" ]] && docker stop "$cid" >/dev/null 2>&1 || true
   done
 
-  printf "   ${CYN}⋯${R}  Building containers (first run: several minutes)…\n"
-  local _build_log; _build_log=$(mktemp)
-  compose build --pull >"$_build_log" 2>&1 &
-  local _build_pid=$!
-  spin $_build_pid "Building Docker images"
-  wait $_build_pid || {
-    printf "\r   ${RED}✗${R}  Docker build failed:\n"
-    cat "$_build_log"
-    rm -f "$_build_log"
-    die "Fix the build errors above and re-run."
-  }
-  rm -f "$_build_log"
+  printf '\n'
+  progress_init_panel
 
-  local _up_log; _up_log=$(mktemp)
-  compose up -d >"$_up_log" 2>&1 &
-  local _up_pid=$!
-  spin $_up_pid "Starting services"
-  wait $_up_pid || {
-    printf "\r   ${RED}✗${R}  docker compose up failed:\n"
-    cat "$_up_log"
-    rm -f "$_up_log"
-    die "Containers failed to start — see errors above."
-  }
-  rm -f "$_up_log"
+  progress_set_service 0 loading "pulling image"
+  progress_run 0 "pulling image" compose pull ollama || die "Failed to pull Ollama image."
+  progress_set_service 0 done "image ready"
+  progress_advance
 
-  # Wait for Ollama container (up to 3 min)
-  local deadline=$(( $(date +%s) + 180 ))
-  while [[ $(date +%s) -lt $deadline ]]; do
-    local health
-    health=$(docker inspect inference-studio-ollama --format='{{.State.Health.Status}}' 2>/dev/null || echo "")
-    [[ "$health" == "healthy" ]] && break
-    sleep 2
-  done
-  docker inspect inference-studio-ollama --format='{{.State.Health.Status}}' 2>/dev/null | grep -q healthy \
-    && ok "Ollama ready (inference-studio-ollama)" \
+  progress_set_service 1 loading "building image"
+  progress_run 1 "building image" compose build --pull api || die "Failed to build API image."
+  progress_set_service 1 done "image built"
+  progress_advance
+
+  progress_set_service 2 loading "building image"
+  progress_run 2 "building image" compose build --pull web || die "Failed to build Web UI image."
+  progress_set_service 2 done "image built"
+  progress_advance
+
+  progress_set_service 0 loading "starting container"
+  compose up -d ollama >/dev/null 2>&1 || die "Failed to start Ollama container."
+  progress_wait_healthy 0 inference-studio-ollama "" "ready" \
     || warn "Ollama health check timed out — run: compose logs ollama"
 
-  # Wait for API (up to 3 min)
-  local deadline=$(( $(date +%s) + 180 ))
-  while [[ $(date +%s) -lt $deadline ]]; do
-    curl -sf "http://localhost:$API_PORT/health" >/dev/null 2>&1 && break
-    sleep 2
-  done
-  curl -sf "http://localhost:$API_PORT/health" >/dev/null 2>&1 \
-    && ok "API ready  →  http://localhost:$API_PORT" \
+  progress_set_service 1 loading "starting container"
+  compose up -d api >/dev/null 2>&1 || die "Failed to start API container."
+  progress_wait_healthy 1 inference-studio-api "http://localhost:$API_PORT/health" "ready → http://localhost:$API_PORT" \
     || warn "API health check timed out — run: compose logs api"
 
-  # Wait for web (up to 3 min)
-  deadline=$(( $(date +%s) + 180 ))
-  while [[ $(date +%s) -lt $deadline ]]; do
-    curl -sf "http://localhost:$WEB_PORT" >/dev/null 2>&1 && break
-    sleep 2
-  done
-  curl -sf "http://localhost:$WEB_PORT" >/dev/null 2>&1 \
-    && ok "Web UI ready  →  http://localhost:$WEB_PORT" \
+  progress_set_service 2 loading "starting container"
+  compose up -d web >/dev/null 2>&1 || die "Failed to start Web UI container."
+  progress_wait_healthy 2 inference-studio-web "http://localhost:$WEB_PORT" "ready → http://localhost:$WEB_PORT" \
     || warn "Web UI health check timed out — run: compose logs web"
+
+  printf '\n'
+  ok "All services started"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
