@@ -10,9 +10,10 @@ nav_order: 2
 
 ### OS & hardware support
 - Detects macOS, Debian/Ubuntu, Arch Linux, Fedora/RHEL automatically
-- Identifies NVIDIA GPU + VRAM, Apple Silicon (Metal), or CPU-only
-- Installs Docker Engine, NVIDIA Container Toolkit, and cloudflared without manual steps
+- Identifies NVIDIA GPU + VRAM, Apple Silicon, or CPU-only
+- Installs Docker Engine, NVIDIA Container Toolkit (when NVIDIA GPU found), and cloudflared
 - Requests sudo only once; keeps the session alive during the install
+- Applies `docker-compose.nvidia.yml` automatically when an NVIDIA GPU is detected
 
 ### Dependency installation
 Every package installation shows a named spinner so you know exactly what is being installed:
@@ -21,8 +22,17 @@ Every package installation shows a named spinner so you know exactly what is bei
    ✓  Installing nvidia-container-toolkit
 ```
 
+**No host Ollama install.** Ollama runs inside the `inference-studio-ollama` container.
+
 ### Ollama model deployment
-Models are pulled and served via Ollama on the host. The API proxies Ollama's OpenAI-compatible `/v1` endpoints and tracks deployment progress in SQLite.
+- Curated model list in the UI (Mistral, Qwen, Phi, Llama, GPT-OSS, and more)
+- **Custom Ollama models**: enter any tag from [ollama.com/search](https://ollama.com/search)
+- Deployment progress with percentage during download
+- Deploy log and Ollama diagnostics panel on the dashboard
+- Retry button when a previous deploy failed but Ollama is healthy
+- Stale error state cleared automatically on API restart
+
+Models are pulled into the `ollama_data` Docker volume and served by the Ollama container. The API proxies Ollama's OpenAI-compatible `/v1` endpoints and tracks deployment progress in SQLite.
 
 ### Cloudflare Quick Tunnel
 - No Cloudflare account needed
@@ -40,7 +50,7 @@ Models are pulled and served via Ollama on the host. The API proxies Ollama's Op
 - Displays the active Cloudflare tunnel URL with a copy button
 - Quick-start API snippet
 - Recent request log (for admins)
-- **Model picker wizard** when no model is running: shows top 5 with VRAM requirements, expandable to full list
+- **Model picker wizard** when no model is running: top models with VRAM requirements, expandable full list, and custom Ollama tag input
 
 ### Chat (`/chat`)
 - Full-page streaming chat interface
@@ -62,9 +72,11 @@ Models are pulled and served via Ollama on the host. The API proxies Ollama's Op
 Password-protected admin panel with four tabs:
 
 **Models tab**
-- Full list of available models with params and VRAM requirements
+- Full list of curated models with params and VRAM requirements
+- **Deploy any Ollama model** input (browse [ollama.com/search](https://ollama.com/search))
 - Deploy / stop buttons
 - Live deployment status (pulling → starting → running)
+- Deploy log and Ollama diagnostics (URL, latency, version, cached model count)
 - Ollama deployment log streaming (SSE)
 - HF token input for gated models
 
@@ -106,12 +118,14 @@ All `/v1/*` requests require `Authorization: Bearer <api-key>`. API keys are val
 | `/api/admin/requests` | GET | Request log |
 | `/api/admin/settings` | GET/PATCH | Settings |
 
-### Setup endpoints (JWT)
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/setup/status` | GET | Ollama status + tunnel URL |
-| `/api/setup/models` | GET | Available model list |
-| `/api/setup/deploy` | POST | Deploy a model |
-| `/api/setup/stop` | POST | Stop loaded model |
-| `/api/setup/logs` | GET | SSE stream of Ollama deployment progress |
-| `/api/setup/tunnel` | POST | Register tunnel URL |
+### Setup endpoints
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/setup/status` | GET | — | Ollama status, deploy logs, tunnel URL |
+| `/api/setup/diagnostics` | GET | — | Probe Ollama (latency, version, model count) |
+| `/api/setup/models` | GET | — | Curated model list |
+| `/api/setup/deploy` | POST | JWT | Deploy a model (curated ID or Ollama tag) |
+| `/api/setup/stop` | POST | JWT | Stop loaded model |
+| `/api/setup/cancel` | POST | JWT | Cancel in-progress deployment |
+| `/api/setup/logs` | GET | JWT | SSE stream of deployment progress |
+| `/api/setup/tunnel` | POST | JWT | Register tunnel URL |

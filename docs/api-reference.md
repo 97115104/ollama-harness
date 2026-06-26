@@ -53,7 +53,7 @@ Standard OpenAI chat completions format.
 }
 ```
 
-Use **`default`** to target the model currently deployed in the dashboard. Inference Studio resolves it to the Ollama tag before forwarding (e.g. `default` → `llama3.2:3b`). You can also pass the full HuggingFace model ID.
+Use **`default`** to target the model currently deployed in the dashboard. Inference Studio resolves it to the Ollama tag before forwarding (e.g. `default` → `gpt-oss:20b`). You can also pass the curated HuggingFace model ID or the raw Ollama tag.
 
 `max_completion_tokens` is accepted and mapped to `max_tokens` for clients that send the newer OpenAI field name.
 
@@ -98,7 +98,7 @@ data: [DONE]
 
 ### `GET /v1/models`
 
-Lists available models when a deployment is **running**. Always includes `default` (alias for the active model) plus the deployed HuggingFace ID.
+Lists available models when a deployment is **running**. Always includes `default` (alias for the active model) plus the deployed model ID (HuggingFace ID or Ollama tag).
 
 ```json
 {
@@ -259,11 +259,33 @@ curl -X PATCH http://localhost:3000/api/admin/keys/KEY_ID \
 
 ### Deploy a model
 
+Accepts a curated model ID from `/api/setup/models` **or any valid Ollama tag** (e.g. `gpt-oss:20b`, `qwen3.5:9b`).
+
 ```bash
+# Curated model
 curl -X POST http://localhost:3000/api/setup/deploy \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"model":"mistralai/Mistral-7B-Instruct-v0.3"}'
+
+# Any Ollama model
+curl -X POST http://localhost:3000/api/setup/deploy \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-oss:20b"}'
+```
+
+Pass `"replace": true` to cancel an in-progress deployment and start a new one.
+
+If Ollama is unreachable, returns `503` with diagnostics:
+
+```json
+{
+  "error": "Cannot reach Ollama at http://ollama:11434: ...",
+  "hint": "Check the Ollama container: docker compose logs ollama",
+  "ollama_url": "http://ollama:11434",
+  "diagnostics": { "reachable": false, "url": "http://ollama:11434", ... }
+}
 ```
 
 ### Get deployment status
@@ -276,9 +298,36 @@ Response:
 ```json
 {
   "status": "running",
-  "model": "mistralai/Mistral-7B-Instruct-v0.3",
+  "model": "gpt-oss:20b",
   "error": null,
-  "gpu_util": "0.9",
+  "progress": "",
+  "ollama_url": "http://ollama:11434",
+  "deploy_logs": ["[12:00:01.234] Deploy complete: gpt-oss:20b is running"],
+  "gpu_type": "nvidia",
+  "engine": "ollama",
   "tunnel_url": "https://xxx-yyy-zzz.trycloudflare.com"
+}
+```
+
+Status values: `idle`, `pulling`, `starting`, `running`, `error`.
+
+### Ollama diagnostics
+
+Probe the Ollama container (no auth required):
+
+```bash
+curl http://localhost:3000/api/setup/diagnostics
+```
+
+Response:
+```json
+{
+  "url": "http://ollama:11434",
+  "reachable": true,
+  "latency_ms": 3,
+  "version": "0.30.10",
+  "model_count": 1,
+  "error": null,
+  "hint": null
 }
 ```

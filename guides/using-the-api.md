@@ -1,6 +1,6 @@
 # Using the Inference Studio API
 
-After deploying a model (`bash deploy-locally.sh` > select model > wait for green status), you have a running OpenAI-compatible API.
+After deploying a model (`bash deploy-locally.sh` → select or enter a model → wait for **running** status), you have a running OpenAI-compatible API. Ollama runs inside Docker — no separate host install needed.
 
 ---
 
@@ -45,12 +45,12 @@ Use **`default`** as the model name to always target whatever model is currently
 External clients send `model: "default"`. Ollama does not understand that name on its own, so Inference Studio resolves it **before** forwarding the request:
 
 1. Look up the model currently deployed in the dashboard (stored in SQLite).
-2. Map its HuggingFace ID to the Ollama tag (e.g. `meta-llama/Llama-3.2-3B-Instruct` → `llama3.2:3b`).
-3. Forward the request to Ollama with the resolved tag.
+2. Resolve it to the Ollama tag (e.g. `meta-llama/Llama-3.2-3B-Instruct` → `llama3.2:3b`, or `gpt-oss:20b` → `gpt-oss:20b`).
+3. Forward the request to the Ollama container with the resolved tag.
 
-`GET /v1/models` lists `default` plus the deployed HuggingFace ID when a model is running. Clients that preflight with `/models` (including [Write Like Me](https://97115104.github.io/writelikeme/)) will see `default` as a valid choice.
+`GET /v1/models` lists `default` plus the deployed model ID when a model is running. Clients that preflight with `/models` (including [Write Like Me](https://97115104.github.io/writelikeme/)) will see `default` as a valid choice.
 
-The built-in **`/chat`** page does not use `default`—it sends the full deployed model ID automatically. That is why `/chat` can work while a third-party app using `default` fails if the API is out of date or no model is deployed.
+The built-in **`/chat`** page does not use `default`—it sends the full deployed model ID automatically. That is why `/chat` can work while a third-party app using `default` fails if no model is deployed.
 
 OpenAI-compatible fields are normalized on the way through. For example, `max_completion_tokens` (used by Write Like Me) is mapped to `max_tokens` before the request reaches Ollama.
 
@@ -255,7 +255,9 @@ To revoke a key: Admin → Keys → click **disable** or **del**.
 
 **`401 invalid_api_key`**: double-check the key was copied correctly and is enabled in Admin > Keys.
 
-**`503 engine_unavailable`**: no model is deployed. Go to `http://localhost:3000`, select a model, and wait for the green status indicator.
+**`503 engine_unavailable`**: no model is deployed. Go to `http://localhost:3000`, select or enter a model, and wait for **running** status.
+
+**Deploy error with "fetch failed" but Ollama diagnostics show healthy**: stale error from a previous attempt. Click **Retry** on the deploy screen or run `docker compose up -d --build`.
 
 ### External clients (Write Like Me, Open WebUI, etc.)
 
@@ -274,7 +276,7 @@ Preflight checks often call `GET /v1/models`, which can succeed even when `POST 
 
 **`/chat` works but Write Like Me does not**
 
-The in-app chat page sends the deployed HuggingFace model ID. Write Like Me sends `default`. Both are supported, but `default` requires a running deployment and a current API build. Confirm with:
+The in-app chat page sends the deployed model ID. Write Like Me sends `default`. Both are supported, but `default` requires a running deployment. Confirm with:
 
 ```bash
 curl http://localhost:3000/v1/models -H "Authorization: Bearer sk-studio-YOUR_KEY"
