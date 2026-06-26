@@ -27,6 +27,7 @@ interface RequestDetail {
 interface SetupStatus {
   status: string; model: string | null; error: string | null; progress: string | null;
   gpu_util: string | null; tunnel_url: string | null;
+  ollama_url?: string; deploy_logs?: string[];
 }
 interface Model { id: string; name: string; params: string; vram_gb: number; tags: string[]; no_auth: boolean; }
 
@@ -181,6 +182,7 @@ export default function AdminPage() {
   const [totpDisableCode, setTotpDisableCode]= useState("");
 
   const [deployingModel,  setDeployingModel] = useState("");
+  const [customModel,       setCustomModel]      = useState("");
   const [hfToken,         setHfToken]        = useState("");
   const [needsHf,         setNeedsHf]        = useState<string | null>(null);
   const [cancelling,      setCancelling]     = useState(false);
@@ -217,9 +219,13 @@ export default function AdminPage() {
   }, [token, loadKeys, loadRequests, loadSetup, loadModels, loadTotpStatus]);
 
   useEffect(() => {
-    if (!["pulling", "starting"].includes(setupStatus?.status ?? "")) return;
-    const t = setInterval(loadSetup, 4000); return () => clearInterval(t);
+    if (!["pulling", "starting", "error"].includes(setupStatus?.status ?? "")) return;
+    const t = setInterval(loadSetup, 2000); return () => clearInterval(t);
   }, [setupStatus?.status, loadSetup]);
+
+  useEffect(() => {
+    if (["pulling", "starting", "error"].includes(setupStatus?.status ?? "")) setShowLogs(true);
+  }, [setupStatus?.status]);
 
   useEffect(() => {
     if (!showLogs || !token) return;
@@ -346,9 +352,12 @@ export default function AdminPage() {
     setError(""); setDeployingModel(modelId); setNeedsHf(null);
     try {
       const r = await af("/api/setup/deploy", { method: "POST", body: JSON.stringify({ model: modelId, hf_token: hfToken || undefined, replace }) });
-      const d = await r.json() as { error?: string; needs_hf_token?: boolean; ok?: boolean };
+      const d = await r.json() as { error?: string; needs_hf_token?: boolean; ok?: boolean; hint?: string; ollama_url?: string };
       if (d.needs_hf_token) { setNeedsHf(modelId); setDeployingModel(""); return; }
-      if (d.error) { setError(d.error); toast(d.error, "err"); setDeployingModel(""); return; }
+      if (d.error) {
+        const msg = [d.error, d.hint, d.ollama_url ? `Ollama URL: ${d.ollama_url}` : ""].filter(Boolean).join("\n");
+        setError(msg); toast(d.error, "err"); setDeployingModel(""); return;
+      }
       toast(`Deploying ${modelId.split("/").pop()}…`, "info");
       setShowLogs(false);
       loadSetup();
@@ -445,8 +454,17 @@ export default function AdminPage() {
                   {setupStatus.progress && deployInProgress && (
                     <div className="text-xs mt-1 font-mono" style={{ color: "#ccff00" }}>{setupStatus.progress}</div>
                   )}
-                  {setupStatus.error && <div className="text-xs mt-1" style={{ color: "#ff4757" }}>{setupStatus.error}</div>}
-                  {["pulling", "starting"].includes(setupStatus.status) && (
+                  {setupStatus.error && <div className="text-xs mt-1 whitespace-pre-wrap" style={{ color: "#ff4757" }}>{setupStatus.error}</div>}
+                  {setupStatus.ollama_url && (
+                    <div className="text-xs mt-1 font-mono" style={{ color: "#444" }}>Ollama: {setupStatus.ollama_url}</div>
+                  )}
+                  {setupStatus.deploy_logs && setupStatus.deploy_logs.length > 0 && (
+                    <div className="mt-3 p-2 font-mono text-xs overflow-auto max-h-32"
+                      style={{ background: "#050505", border: "1px solid #1a1a1a", color: "#666" }}>
+                      {setupStatus.deploy_logs.map((l, i) => <div key={i}>{l}</div>)}
+                    </div>
+                  )}
+                  {["pulling", "starting", "error"].includes(setupStatus.status) && (
                     <button onClick={() => setShowLogs(!showLogs)} className="mt-3 text-xs" style={{ color: "#555" }}>
                       {showLogs ? "Hide" : "Show"} logs
                     </button>
@@ -471,6 +489,39 @@ export default function AdminPage() {
                   </div>
                 </div>
               )}
+              <div className="mb-4 p-4" style={{ background: "#0f0f0f", border: "1px solid #1e1e1e" }}>
+                <div className="text-xs font-bold mb-1" style={{ color: "#ccff00" }}>Deploy any Ollama model</div>
+                <p className="text-xs mb-3" style={{ color: "#666" }}>
+                  Browse{" "}
+                  <a href="https://ollama.com/search" target="_blank" rel="noopener noreferrer" style={{ color: "#ccff00" }}>
+                    ollama.com/search
+                  </a>
+                  {" "}and enter the model tag (e.g. <code style={{ color: "#888" }}>qwen3.5:9b</code>, <code style={{ color: "#888" }}>gpt-oss:20b</code>).
+                </p>
+                <div className="flex gap-2">
+                  <input value={customModel} onChange={e => setCustomModel(e.target.value)}
+                    placeholder="model:tag"
+                    className="flex-1 px-3 py-1.5 text-xs font-mono focus:outline-none"
+                    style={{
+                      background: "#0a0a0a",
+                      border: `1px solid ${customModel.trim() ? "rgba(204,255,0,0.4)" : "#333"}`,
+                      color: "#e8e8e8",
+                    }} />
+                  <Tip label={customModel.trim() ? `Deploy ${customModel.trim()}` : "Enter a model tag first"}>
+                    <button
+                      onClick={() => customModel.trim() && deployModel(customModel.trim(), deployInProgress)}
+                      disabled={!customModel.trim() || (deployInProgress && setupStatus?.model === customModel.trim())}
+                      className="px-3 py-1.5 text-xs font-bold shrink-0"
+                      style={{
+                        background: customModel.trim() ? "#ccff00" : "#1a1a1a",
+                        color: customModel.trim() ? "#000" : "#444",
+                        cursor: customModel.trim() ? "pointer" : "not-allowed",
+                      }}>
+                      Deploy
+                    </button>
+                  </Tip>
+                </div>
+              </div>
               <div className="flex flex-col gap-2">
                 {models.map(m => {
                   const isActive = setupStatus?.model === m.id && setupStatus.status === "running";

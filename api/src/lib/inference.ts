@@ -1,6 +1,6 @@
-/** Ollama inference URL — host Ollama when running API in Docker. */
+/** Ollama inference URL — the ollama service in Docker Compose by default. */
 export function getInferenceUrl(): string {
-  return process.env.OLLAMA_URL || "http://host.docker.internal:11434";
+  return process.env.OLLAMA_URL || "http://ollama:11434";
 }
 
 export function getInferenceBackend(): "ollama" {

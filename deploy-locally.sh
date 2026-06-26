@@ -77,6 +77,7 @@ print_banner() {
   printf "  ╔══════════════════════════════════════════╗\n"
   printf "  ║        INFERENCE  STUDIO  v1.0           ║\n"
   printf "  ║        Self-hosted Ollama inference      ║\n"
+  printf "  ║        All services run in Docker        ║\n"
   printf "  ╚══════════════════════════════════════════╝${R}\n\n"
 }
 
@@ -138,12 +139,12 @@ detect_gpu() {
   elif [[ "$OS" == "macos" ]]; then
     if system_profiler SPDisplaysDataType 2>/dev/null | grep -qi "apple"; then
       GPU_TYPE="metal"
-      GPU_NAME="Apple Silicon (Metal)"
+      GPU_NAME="Apple Silicon (Docker — CPU inference)"
       local total_ram
       total_ram=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
       GPU_VRAM=$(( total_ram / 1024 / 1024 / 1024 / 2 ))
       ok "Apple Silicon · ~${GPU_VRAM}GB unified memory"
-      ok "Inference via Ollama (Metal GPU accelerated)"
+      ok "Ollama runs in Docker (GPU passthrough unavailable in macOS containers)"
     else
       GPU_TYPE="cpu"
       warn "No Metal GPU detected. Using CPU mode."
@@ -334,48 +335,6 @@ _cloudflared_bin() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Ollama (Apple Silicon — Metal GPU inference on host)
-# ─────────────────────────────────────────────────────────────────────────────
-install_ollama() {
-  section "Setting up Ollama"
-
-  case "$OS" in
-    macos)
-      install_pkg ollama
-      ;;
-    debian|arch|fedora)
-      if pkg_ok ollama; then
-        ok "ollama already installed"
-      else
-        log "Installing Ollama…"
-        curl -fsSL https://ollama.com/install.sh | sh >/dev/null 2>&1 &
-        spin $! "Installing Ollama"
-      fi
-      ;;
-  esac
-
-  if ! curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-    log "Starting Ollama service…"
-    if pgrep -x ollama >/dev/null 2>&1; then
-      sleep 2
-    else
-      nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
-      local deadline=$(( $(date +%s) + 30 ))
-      while [[ $(date +%s) -lt $deadline ]]; do
-        curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
-        sleep 1
-      done
-    fi
-  fi
-
-  curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 \
-    && ok "Ollama ready on port 11434" \
-    || warn "Ollama may not be running — start with: ollama serve"
-
-  export OLLAMA_URL=http://host.docker.internal:11434
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
 # All dependencies
 # ─────────────────────────────────────────────────────────────────────────────
 install_all_deps() {
@@ -430,7 +389,6 @@ install_all_deps() {
   install_docker
   install_nvidia_toolkit
   install_cloudflared
-  install_ollama
 
   ok "All dependencies ready"
 }
@@ -439,6 +397,7 @@ install_all_deps() {
 # docker compose command detection
 # ─────────────────────────────────────────────────────────────────────────────
 COMPOSE_CMD=()
+COMPOSE_FILES=(-f docker-compose.yml)
 
 detect_compose() {
   if docker compose version >/dev/null 2>&1; then
@@ -449,6 +408,10 @@ detect_compose() {
     die "docker compose not found. Install docker-compose-plugin."
   fi
   log "Compose: ${B}$(IFS=' '; echo "${COMPOSE_CMD[*]}")${R}"
+}
+
+compose() {
+  "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" "$@"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -463,8 +426,15 @@ start_studio() {
 
   [[ ! -f .env ]] && { cp .env.example .env; log "Created .env from .env.example"; }
 
-  # Pass GPU + inference backend into compose environment
-  export GPU_TYPE OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+  COMPOSE_FILES=(-f docker-compose.yml)
+  if [[ "$GPU_TYPE" == "nvidia" ]]; then
+    COMPOSE_FILES+=(-f docker-compose.nvidia.yml)
+    log "NVIDIA GPU detected — enabling GPU access for Ollama container"
+  else
+    log "Ollama will run in Docker (CPU mode)"
+  fi
+
+  export GPU_TYPE
 
   # Free up ports if other containers are using them
   for port in $WEB_PORT $API_PORT; do
@@ -475,7 +445,7 @@ start_studio() {
 
   printf "   ${CYN}⋯${R}  Building containers (first run: several minutes)…\n"
   local _build_log; _build_log=$(mktemp)
-  "${COMPOSE_CMD[@]}" build --pull >"$_build_log" 2>&1 &
+  compose build --pull >"$_build_log" 2>&1 &
   local _build_pid=$!
   spin $_build_pid "Building Docker images"
   wait $_build_pid || {
@@ -487,7 +457,7 @@ start_studio() {
   rm -f "$_build_log"
 
   local _up_log; _up_log=$(mktemp)
-  "${COMPOSE_CMD[@]}" up -d >"$_up_log" 2>&1 &
+  compose up -d >"$_up_log" 2>&1 &
   local _up_pid=$!
   spin $_up_pid "Starting services"
   wait $_up_pid || {
@@ -498,6 +468,18 @@ start_studio() {
   }
   rm -f "$_up_log"
 
+  # Wait for Ollama container (up to 3 min)
+  local deadline=$(( $(date +%s) + 180 ))
+  while [[ $(date +%s) -lt $deadline ]]; do
+    local health
+    health=$(docker inspect inference-studio-ollama --format='{{.State.Health.Status}}' 2>/dev/null || echo "")
+    [[ "$health" == "healthy" ]] && break
+    sleep 2
+  done
+  docker inspect inference-studio-ollama --format='{{.State.Health.Status}}' 2>/dev/null | grep -q healthy \
+    && ok "Ollama ready (inference-studio-ollama)" \
+    || warn "Ollama health check timed out — run: compose logs ollama"
+
   # Wait for API (up to 3 min)
   local deadline=$(( $(date +%s) + 180 ))
   while [[ $(date +%s) -lt $deadline ]]; do
@@ -506,7 +488,7 @@ start_studio() {
   done
   curl -sf "http://localhost:$API_PORT/health" >/dev/null 2>&1 \
     && ok "API ready  →  http://localhost:$API_PORT" \
-    || warn "API health check timed out — run: $(IFS=' '; echo "${COMPOSE_CMD[*]}") logs api"
+    || warn "API health check timed out — run: compose logs api"
 
   # Wait for web (up to 3 min)
   deadline=$(( $(date +%s) + 180 ))
@@ -516,7 +498,7 @@ start_studio() {
   done
   curl -sf "http://localhost:$WEB_PORT" >/dev/null 2>&1 \
     && ok "Web UI ready  →  http://localhost:$WEB_PORT" \
-    || warn "Web UI health check timed out — run: $(IFS=' '; echo "${COMPOSE_CMD[*]}") logs web"
+    || warn "Web UI health check timed out — run: compose logs web"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -622,7 +604,7 @@ cleanup() {
   [[ -n "$SUDO_KEEP_ALIVE" ]] && kill "$SUDO_KEEP_ALIVE" 2>/dev/null || true
   cd "$SCRIPT_DIR"
   if [[ ${#COMPOSE_CMD[@]} -gt 0 ]]; then
-    "${COMPOSE_CMD[@]}" stop >/dev/null 2>&1 || true
+    compose stop >/dev/null 2>&1 || true
   else
     docker compose stop >/dev/null 2>&1 || true
   fi

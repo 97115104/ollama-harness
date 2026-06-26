@@ -7,6 +7,9 @@ import { health } from "./routes/health.js";
 import { setup }  from "./routes/setup.js";
 import { chat }   from "./routes/chat.js";
 import { admin }  from "./routes/admin.js";
+import { resetStaleDeployState } from "./lib/ollama.js";
+
+resetStaleDeployState();
 
 const app = new Hono<HonoVars>();
 

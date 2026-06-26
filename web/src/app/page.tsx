@@ -36,6 +36,19 @@ type Status = {
   status: "idle" | "pulling" | "starting" | "running" | "error";
   model: string | null; error: string | null; progress: string | null; gpu_util: string | null; tunnel_url: string | null;
   engine?: "ollama";
+  ollama_url?: string;
+  deploy_logs?: string[];
+};
+
+type Diagnostics = {
+  url: string;
+  reachable: boolean;
+  latency_ms: number | null;
+  version: string | null;
+  model_count: number | null;
+  error: string | null;
+  hint: string | null;
+  deploy_logs?: string[];
 };
 
 function ModelCard({ model, selected, onSelect }: { model: Model; selected: boolean; onSelect: () => void }) {
@@ -83,6 +96,7 @@ function ModelCard({ model, selected, onSelect }: { model: Model; selected: bool
 function SetupWizard({ onDeployed }: { onDeployed: () => void }) {
   const [models, setModels] = useState<Model[]>([]);
   const [selected, setSelected] = useState<string>(TOP_5[0]);
+  const [customModel, setCustomModel] = useState("");
   const [showMore, setShowMore] = useState(false);
   const [hfToken, setHfToken] = useState("");
   const [needsToken, setNeedsToken] = useState(false);
@@ -100,7 +114,9 @@ function SetupWizard({ onDeployed }: { onDeployed: () => void }) {
   const topModels  = models.filter(m => TOP_5.includes(m.id));
   const moreModels = models.filter(m => !TOP_5.includes(m.id));
   const sorted     = [...topModels.sort((a, b) => TOP_5.indexOf(a.id) - TOP_5.indexOf(b.id)), ...(showMore ? moreModels : [])];
-  const selectedModel = models.find(m => m.id === selected);
+  const deployTarget = customModel.trim() || selected;
+  const selectedModel = models.find(m => m.id === deployTarget);
+  const deployLabel = customModel.trim() || selectedModel?.name || "model";
 
   const deploy = async () => {
     setError(""); setDeploying(true);
@@ -108,11 +124,16 @@ function SetupWizard({ onDeployed }: { onDeployed: () => void }) {
       const res = await fetch("/api/setup/deploy", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: selected, hf_token: hfToken || undefined }),
+        body: JSON.stringify({ model: deployTarget, hf_token: hfToken || undefined }),
       });
-      const d = await res.json() as { error?: string; needs_hf_token?: boolean };
+      const d = await res.json() as { error?: string; needs_hf_token?: boolean; hint?: string; ollama_url?: string };
       if (d.needs_hf_token) { setNeedsToken(true); setDeploying(false); return; }
-      if (d.error) { setError(d.error); setDeploying(false); return; }
+      if (d.error) {
+        const detail = [d.error, d.hint, d.ollama_url ? `Ollama URL: ${d.ollama_url}` : ""].filter(Boolean).join("\n");
+        setError(detail);
+        setDeploying(false);
+        return;
+      }
       onDeployed();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed"); setDeploying(false);
@@ -128,7 +149,8 @@ function SetupWizard({ onDeployed }: { onDeployed: () => void }) {
 
       <div className="flex flex-col gap-2 mb-4">
         {sorted.map(m => (
-          <ModelCard key={m.id} model={m} selected={selected === m.id} onSelect={() => { setSelected(m.id); setNeedsToken(false); }} />
+          <ModelCard key={m.id} model={m} selected={!customModel.trim() && selected === m.id}
+            onSelect={() => { setSelected(m.id); setCustomModel(""); setNeedsToken(false); }} />
         ))}
       </div>
 
@@ -141,6 +163,25 @@ function SetupWizard({ onDeployed }: { onDeployed: () => void }) {
           View {moreModels.length} more models ↓
         </button>
       )}
+
+      <div className="mb-6 p-4" style={{ border: "1px solid #1e1e1e", background: "#0f0f0f" }}>
+        <div className="text-xs font-bold mb-1" style={{ color: "#ccff00" }}>Or use any Ollama model</div>
+        <p className="text-xs mb-3" style={{ color: "#666" }}>
+          Enter a model name from{" "}
+          <a href="https://ollama.com/search" target="_blank" rel="noopener noreferrer" style={{ color: "#ccff00" }}>
+            ollama.com/search
+          </a>
+          {" "}(e.g. <code style={{ color: "#888" }}>qwen3.5:9b</code>, <code style={{ color: "#888" }}>gemma4:12b</code>).
+        </p>
+        <input value={customModel} onChange={e => setCustomModel(e.target.value)}
+          placeholder="model:tag"
+          className="w-full px-3 py-2 text-sm font-mono focus:outline-none"
+          style={{
+            background: "#0a0a0a",
+            border: `1px solid ${customModel.trim() ? "rgba(204,255,0,0.4)" : "#333"}`,
+            color: "#e8e8e8",
+          }} />
+      </div>
 
       {needsToken && (
         <div className="mb-4 p-4" style={{ border: "1px solid rgba(204,255,0,0.3)", background: "rgba(204,255,0,0.04)" }}>
@@ -158,7 +199,7 @@ function SetupWizard({ onDeployed }: { onDeployed: () => void }) {
         </div>
       )}
 
-      {error && <div className="mb-4 p-3 text-sm" style={{ background: "rgba(255,71,87,0.1)", border: "1px solid rgba(255,71,87,0.3)", color: "#ff4757" }}>{error}</div>}
+      {error && <div className="mb-4 p-3 text-sm whitespace-pre-wrap" style={{ background: "rgba(255,71,87,0.1)", border: "1px solid rgba(255,71,87,0.3)", color: "#ff4757" }}>{error}</div>}
 
       <button onClick={deploy} disabled={deploying}
         className="w-full py-3 font-bold text-sm transition-all"
@@ -168,7 +209,7 @@ function SetupWizard({ onDeployed }: { onDeployed: () => void }) {
           border: deploying ? "1px solid rgba(204,255,0,0.3)" : "none",
           cursor: deploying ? "not-allowed" : "pointer",
         }}>
-        {deploying ? "Starting deployment…" : `Deploy ${selectedModel?.name ?? "model"}`}
+        {deploying ? "Starting deployment…" : `Deploy ${deployLabel}`}
       </button>
 
       {!token && (
@@ -182,11 +223,49 @@ function SetupWizard({ onDeployed }: { onDeployed: () => void }) {
 
 function DeployProgress({ status, onRunning, onCancel }: { status: Status; onRunning: () => void; onCancel: () => void }) {
   const [cancelling, setCancelling] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState("");
+  const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
+  const [probing, setProbing] = useState(false);
   const token = typeof window !== "undefined" ? localStorage.getItem("admin_token") ?? "" : "";
 
   useEffect(() => {
     if (status.status === "running") onRunning();
   }, [status, onRunning]);
+
+  const runDiagnostics = useCallback(async () => {
+    setProbing(true);
+    try {
+      const r = await fetch("/api/setup/diagnostics");
+      setDiagnostics(await r.json() as Diagnostics);
+    } catch {
+      setDiagnostics({ url: status.ollama_url ?? "unknown", reachable: false, latency_ms: null, version: null, model_count: null, error: "Failed to fetch diagnostics", hint: null });
+    } finally {
+      setProbing(false);
+    }
+  }, [status.ollama_url]);
+
+  useEffect(() => {
+    if (status.status === "error") runDiagnostics();
+  }, [status.status, runDiagnostics]);
+
+  const retryDeploy = async () => {
+    if (!status.model || !token) return;
+    setRetryError(""); setRetrying(true);
+    try {
+      const res = await fetch("/api/setup/deploy", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: status.model, replace: true }),
+      });
+      const d = await res.json() as { error?: string; hint?: string };
+      if (d.error) setRetryError([d.error, d.hint].filter(Boolean).join("\n"));
+    } catch (e) {
+      setRetryError(e instanceof Error ? e.message : "Retry failed");
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const cancel = async () => {
     setCancelling(true);
@@ -206,11 +285,16 @@ function DeployProgress({ status, onRunning, onCancel }: { status: Status; onRun
   ];
   const current = steps.findIndex(s => s.key === status.status);
   const inProgress = ["pulling", "starting"].includes(status.status);
+  const logs = status.deploy_logs ?? [];
+  const ollamaHealthy = diagnostics?.reachable === true;
 
   return (
     <div className="fade-in max-w-lg mx-auto text-center">
       <h2 className="text-xl font-bold mb-2" style={{ color: "#ccff00" }}>Deploying {status.model?.split("/").pop()}</h2>
-      <p className="text-xs mb-8" style={{ color: "#555" }}>{status.model}</p>
+      <p className="text-xs mb-2" style={{ color: "#555" }}>{status.model}</p>
+      {status.ollama_url && (
+        <p className="text-xs mb-8 font-mono" style={{ color: "#444" }}>Ollama: {status.ollama_url}</p>
+      )}
 
       <div className="flex flex-col gap-3 mb-8 text-left">
         {steps.map((s, i) => {
@@ -234,15 +318,66 @@ function DeployProgress({ status, onRunning, onCancel }: { status: Status; onRun
         })}
       </div>
 
-      {status.progress && inProgress && (
+      {status.progress && (inProgress || status.status === "error") && (
         <div className="p-3 mb-4 text-sm text-left font-mono" style={{ background: "rgba(204,255,0,0.06)", border: "1px solid rgba(204,255,0,0.2)", color: "#ccff00" }}>
           {status.progress}
         </div>
       )}
 
+      {logs.length > 0 && (
+        <div className="mb-4 p-3 text-left font-mono text-xs overflow-auto max-h-48"
+          style={{ background: "#050505", border: "1px solid #1a1a1a", color: "#888" }}>
+          <div className="text-[10px] uppercase mb-2" style={{ color: "#555" }}>Deploy log</div>
+          {logs.map((l, i) => <div key={i}>{l}</div>)}
+        </div>
+      )}
+
       {status.error && (
-        <div className="p-3 mb-4 text-sm text-left" style={{ background: "rgba(255,71,87,0.1)", border: "1px solid rgba(255,71,87,0.3)", color: "#ff4757" }}>
-          {status.error}
+        <>
+          {ollamaHealthy && (
+            <div className="p-3 mb-4 text-sm text-left" style={{ background: "rgba(204,255,0,0.06)", border: "1px solid rgba(204,255,0,0.2)", color: "#ccff00" }}>
+              Ollama is healthy. This error is from a previous attempt — retry the deployment below.
+            </div>
+          )}
+          <div className="p-3 mb-4 text-sm text-left whitespace-pre-wrap" style={{ background: "rgba(255,71,87,0.1)", border: "1px solid rgba(255,71,87,0.3)", color: "#ff4757" }}>
+            {status.error}
+          </div>
+          {retryError && (
+            <div className="p-3 mb-4 text-sm text-left whitespace-pre-wrap" style={{ background: "rgba(255,71,87,0.1)", border: "1px solid rgba(255,71,87,0.3)", color: "#ff4757" }}>
+              {retryError}
+            </div>
+          )}
+        </>
+      )}
+
+      {(status.status === "error" || diagnostics) && (
+        <div className="mb-4 p-3 text-left text-xs" style={{ background: "#0f0f0f", border: "1px solid #1e1e1e" }}>
+          <div className="flex items-center justify-between mb-2">
+            <span style={{ color: "#ccff00" }}>Ollama diagnostics</span>
+            <button onClick={runDiagnostics} disabled={probing}
+              className="text-[10px] px-2 py-0.5"
+              style={{ border: "1px solid #333", color: probing ? "#555" : "#888", cursor: probing ? "not-allowed" : "pointer" }}>
+              {probing ? "…" : "↻ retry"}
+            </button>
+          </div>
+          {diagnostics ? (
+            <div className="font-mono space-y-1" style={{ color: "#666" }}>
+              <div>URL: {diagnostics.url}</div>
+              <div style={{ color: diagnostics.reachable ? "#00e676" : "#ff4757" }}>
+                {diagnostics.reachable ? `✓ reachable (${diagnostics.latency_ms}ms)` : `✗ unreachable: ${diagnostics.error}`}
+              </div>
+              {diagnostics.version && <div>Version: {diagnostics.version}</div>}
+              {diagnostics.model_count != null && <div>Cached models: {diagnostics.model_count}</div>}
+              {diagnostics.hint && <div className="mt-2" style={{ color: "#888" }}>{diagnostics.hint}</div>}
+              {!diagnostics.reachable && (
+                <div className="mt-2" style={{ color: "#666" }}>
+                  Run <code style={{ color: "#888" }}>docker compose logs ollama</code> to inspect the Ollama container.
+                </div>
+              )}
+            </div>
+          ) : (
+            <div style={{ color: "#555" }}>Checking connection…</div>
+          )}
         </div>
       )}
 
@@ -254,10 +389,21 @@ function DeployProgress({ status, onRunning, onCancel }: { status: Status; onRun
       )}
 
       {status.status === "error" && (
-        <button onClick={onCancel}
-          className="px-4 py-2 text-sm" style={{ border: "1px solid #444", color: "#888" }}>
-          Choose a different model
-        </button>
+        <div className="flex gap-3 justify-center mb-4">
+          <button onClick={retryDeploy} disabled={retrying || !token}
+            className="px-4 py-2 text-sm font-bold"
+            style={{
+              background: token ? "#ccff00" : "#1a1a1a",
+              color: token ? "#000" : "#444",
+              cursor: token && !retrying ? "pointer" : "not-allowed",
+            }}>
+            {retrying ? "Retrying…" : `Retry ${status.model?.split("/").pop() ?? "deploy"}`}
+          </button>
+          <button onClick={onCancel}
+            className="px-4 py-2 text-sm" style={{ border: "1px solid #444", color: "#888" }}>
+            Choose a different model
+          </button>
+        </div>
       )}
 
       <p className="text-xs mt-6" style={{ color: "#333" }}>
@@ -407,9 +553,10 @@ export default function Home() {
 
   useEffect(() => {
     refresh();
+    const interval = phase === "deploying" ? 2000 : 4000;
     const t = setInterval(() => {
       if (phase !== "running") refresh();
-    }, 4000);
+    }, interval);
     return () => clearInterval(t);
   }, [refresh, phase]);
 

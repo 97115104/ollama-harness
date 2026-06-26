@@ -9,6 +9,7 @@ import {
   isDeploymentInProgress,
   inferenceLogs,
   isOllamaSupported,
+  probeOllama,
 } from "../lib/ollama.js";
 import { checkInferenceHealth } from "../lib/inference.js";
 import db from "../db/index.js";
@@ -102,6 +103,22 @@ export const MODELS = [
     tags: ["reasoning", "large"],
     no_auth: true,
   },
+  {
+    id: "gpt-oss:20b",
+    name: "GPT-OSS 20B",
+    description: "OpenAI's open-weight reasoning model — MXFP4, ~16GB VRAM",
+    params: "20B", vram_gb: 16, vram_int8_gb: 16, context_k: 128,
+    tags: ["reasoning", "openai", "ollama"],
+    no_auth: true,
+  },
+  {
+    id: "gpt-oss:120b",
+    name: "GPT-OSS 120B",
+    description: "OpenAI's largest open-weight model — requires ~80GB VRAM",
+    params: "120B", vram_gb: 80, vram_int8_gb: 80, context_k: 128,
+    tags: ["reasoning", "openai", "ollama"],
+    no_auth: true,
+  },
 ];
 
 const setup = new Hono<HonoVars>();
@@ -126,16 +143,19 @@ setup.get("/status", async c => {
 
 setup.get("/models", c => c.json({ models: MODELS }));
 
+setup.get("/diagnostics", async c => {
+  const diagnostics = await probeOllama({ log: false });
+  return c.json(diagnostics);
+});
+
 setup.post("/deploy", adminAuth, async c => {
   const body: { model?: string; replace?: boolean } = await c.req.json<{ model?: string; replace?: boolean }>().catch(() => ({}));
-  if (!body.model) return c.json({ error: "model is required" }, 400);
+  const modelId = body.model?.trim();
+  if (!modelId) return c.json({ error: "model is required" }, 400);
 
-  const found = MODELS.find(m => m.id === body.model);
-  if (!found) return c.json({ error: "Unknown model" }, 400);
-
-  if (!isOllamaSupported(body.model)) {
+  if (!isOllamaSupported(modelId)) {
     return c.json({
-      error: `${found.name} is not available via Ollama. Choose a supported model from the list.`,
+      error: "Invalid model. Pick from the list or enter a valid Ollama model name (e.g. gpt-oss:20b, qwen3.5:9b). Browse models at https://ollama.com/search",
     }, 400);
   }
 
@@ -146,11 +166,21 @@ setup.post("/deploy", adminAuth, async c => {
     await cancelDeployment();
   }
 
-  deployModel(body.model).catch(err => {
+  const preflight = await probeOllama({ log: false });
+  if (!preflight.reachable) {
+    return c.json({
+      error: `Cannot reach Ollama at ${preflight.url}: ${preflight.error ?? "connection failed"}`,
+      hint: preflight.hint ?? "Check the Ollama container: docker compose logs ollama",
+      ollama_url: preflight.url,
+      diagnostics: preflight,
+    }, 503);
+  }
+
+  deployModel(modelId).catch(err => {
     console.error("Deploy error:", err);
   });
 
-  return c.json({ ok: true, message: "Deployment started", model: body.model });
+  return c.json({ ok: true, message: "Deployment started", model: modelId });
 });
 
 setup.post("/cancel", adminAuth, async c => {

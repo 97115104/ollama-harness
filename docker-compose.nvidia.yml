@@ -1,0 +1,4 @@
+# GPU override — applied automatically by deploy-locally.sh when an NVIDIA GPU is detected.
+services:
+  ollama:
+    gpus: all
