@@ -1,5 +1,6 @@
 "use client";
 import { useState, useRef, useEffect, useCallback } from "react";
+import { MarkdownContent } from "@/components/markdown";
 
 type Role = "user" | "assistant" | "system";
 type Message = { role: Role; content: string; id: string };
@@ -27,21 +28,22 @@ function Bubble({ msg, loading, streaming }: { msg: Message; loading?: boolean; 
         style={{ background: isUser ? "rgba(204,255,0,0.15)" : loading ? "rgba(204,255,0,0.08)" : "#1a1a1a", color: isUser ? "#ccff00" : loading ? "#ccff00" : "#666" }}>
         {isUser ? "U" : "AI"}
       </div>
-      <div className={`max-w-[80%] px-4 py-3 text-sm leading-relaxed prose ${isUser ? "text-right" : ""}`}
+      <div className={`${isUser ? "max-w-[80%] chat-bubble-user" : "max-w-[min(85%,42rem)] chat-bubble-ai prose"} px-4 py-3 text-sm leading-relaxed`}
         style={{
           background: isUser ? "rgba(204,255,0,0.06)" : loading ? "rgba(204,255,0,0.03)" : "#0f0f0f",
           border: `1px solid ${isUser ? "rgba(204,255,0,0.15)" : loading ? "rgba(204,255,0,0.2)" : "#1a1a1a"}`,
           borderRadius: "2px",
           color: isError ? "#ff4757" : "#e8e8e8",
-          whiteSpace: "pre-wrap",
           wordBreak: "break-word",
           minHeight: loading ? "2.5rem" : undefined,
         }}>
         {loading ? (
           <ThinkingIndicator />
+        ) : isUser || isError ? (
+          <div style={{ whiteSpace: "pre-wrap" }}>{msg.content}</div>
         ) : (
           <>
-            {msg.content}
+            <MarkdownContent content={msg.content} />
             {streaming && (
               <span className="stream-cursor inline-block ml-0.5" style={{ color: "#ccff00" }}>▋</span>
             )}
