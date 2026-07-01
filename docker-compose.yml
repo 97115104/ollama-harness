@@ -4,7 +4,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: inference-studio-ollama
-    restart: unless-stopped
+    restart: no
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
@@ -17,7 +17,7 @@ services:
   api:
     build: ./api
     container_name: inference-studio-api
-    restart: unless-stopped
+    restart: no
     ports:
       - "3001:3001"
     volumes:
@@ -47,7 +47,7 @@ services:
       args:
         - API_URL=http://api:3001
     container_name: inference-studio-web
-    restart: unless-stopped
+    restart: no
     ports:
       - "3000:3000"
     environment:
